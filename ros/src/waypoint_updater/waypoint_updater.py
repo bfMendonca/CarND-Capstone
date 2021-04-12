@@ -1,8 +1,13 @@
 #!/usr/bin/env python
 
+import copy
+
 import rospy
 from geometry_msgs.msg import PoseStamped
+from std_msgs.msg import Int32
 from styx_msgs.msg import Lane, Waypoint
+from scipy.spatial import KDTree
+import numpy as np
 
 import math
 
@@ -30,27 +35,106 @@ class WaypointUpdater(object):
 
         rospy.Subscriber('/current_pose', PoseStamped, self.pose_cb)
         rospy.Subscriber('/base_waypoints', Lane, self.waypoints_cb)
-
+        
         # TODO: Add a subscriber for /traffic_waypoint and /obstacle_waypoint below
-
+        rospy.Subscriber('/traffic_waypoint', Int32, self.traffic_cb )
 
         self.final_waypoints_pub = rospy.Publisher('final_waypoints', Lane, queue_size=1)
 
-        # TODO: Add other member variables you need below
+        self.carpose = None
+        self.base_waypoints = None
+        self.waypoints_tree = None
+        self.waypoints_2d = []
+        self.nearest_idx = -1
+        self.next_red_light_idx = -1
 
-        rospy.spin()
+        self.loop()
+        
+
+
+    def loop( self ):
+        rate = rospy.Rate( 50 )
+
+        while not rospy.is_shutdown():
+            if self.carpose is not None and self.waypoints_tree is not None and len( self.waypoints_2d ) > 0 :
+                self.nearest_idx = self.get_closest_waypoint_idx()
+                self.publish_waypoints( self.nearest_idx )
+            rate.sleep()
+
+
+    def get_closest_waypoint_idx( self ):
+        if self.carpose is not None and self.waypoints_tree is not None and len( self.waypoints_2d ) > 0:
+            nearest_idx = self.waypoints_tree.query( self.carpose, 1 )[1]
+            
+            closest_coord = np.array( self.waypoints_2d[ nearest_idx ] )
+            prev_coord = np.array( self.waypoints_2d[ nearest_idx -1 ] )
+
+            #Vector of a segment of the route
+            route_vect = closest_coord - prev_coord 
+
+            #Vector frmo the closest waypoint to the car poseition
+            pos_vect = np.array( self.carpose )
+            pos_vect = pos_vect - closest_coord
+
+            #Evaluating if the car is "ahead" of "before" the nearest vector
+            val = np.dot( route_vect, pos_vect )
+
+            if val > 0 :
+                nearest_idx = ( (nearest_idx + 1) % len( self.waypoints_2d ) )
+
+            return nearest_idx
+
+        return -1
+
 
     def pose_cb(self, msg):
-        # TODO: Implement
-        pass
-
+        self.carpose = [msg.pose.position.x, msg.pose.position.y]
+        
     def waypoints_cb(self, waypoints):
-        # TODO: Implement
-        pass
+        self.base_waypoints = waypoints
+
+        if( self.waypoints_tree is None ):
+
+            for waypoint in waypoints.waypoints:
+                p2d = [waypoint.pose.pose.position.x, waypoint.pose.pose.position.y]
+                self.waypoints_2d.append( p2d )
+
+
+        self.waypoints_tree = KDTree( self.waypoints_2d )
+
+
+    def publish_waypoints( self, nearest_idx ):
+        lane = Lane()
+        lane.header = self.base_waypoints.header
+        lane.waypoints = copy.deepcopy( self.base_waypoints.waypoints[ nearest_idx:nearest_idx+LOOKAHEAD_WPS] )
+
+        redlight_idx = self.next_red_light_idx - nearest_idx 
+    
+        if( self.next_red_light_idx != -1 and redlight_idx < 200 ):
+
+            for i in range( len( lane.waypoints ) ):
+
+                new_speed = lane.waypoints[i].twist.twist.linear.x
+
+                if( i < redlight_idx ):
+                    dist = self.distance( lane.waypoints, i, redlight_idx  )
+
+                    if( dist < 60.0 ):
+
+                        new_speed = 11.1 - (60 -  dist)/((60-30.0)/11.1)
+                        if( new_speed < 0.0 ):
+                            new_speed = 0.0
+                        
+                else: 
+                    new_speed = 0.0
+            
+                lane.waypoints[i].twist.twist.linear.x = new_speed
+
+
+        self.final_waypoints_pub.publish( lane )
 
     def traffic_cb(self, msg):
-        # TODO: Callback for /traffic_waypoint message. Implement
-        pass
+        self.next_red_light_idx = msg.data
 
     def obstacle_cb(self, msg):
         # TODO: Callback for /obstacle_waypoint message. We will implement it later
