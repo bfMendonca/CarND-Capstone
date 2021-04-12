@@ -4,6 +4,7 @@ import copy
 
 import rospy
 from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import TwistStamped
 from std_msgs.msg import Int32
 from styx_msgs.msg import Lane, Waypoint
 from scipy.spatial import KDTree
@@ -34,6 +35,8 @@ class WaypointUpdater(object):
         rospy.init_node('waypoint_updater')
 
         rospy.Subscriber('/current_pose', PoseStamped, self.pose_cb)
+        rospy.Subscriber('/current_velocity', TwistStamped, self.twist_cb )
+        
         rospy.Subscriber('/base_waypoints', Lane, self.waypoints_cb)
         
         # TODO: Add a subscriber for /traffic_waypoint and /obstacle_waypoint below
@@ -42,11 +45,15 @@ class WaypointUpdater(object):
         self.final_waypoints_pub = rospy.Publisher('final_waypoints', Lane, queue_size=1)
 
         self.carpose = None
+        self.twist = None
         self.base_waypoints = None
         self.waypoints_tree = None
         self.waypoints_2d = []
         self.nearest_idx = -1
         self.next_red_light_idx = -1
+
+        self.REFERENCE_ACCEL = 10/4.0 #(1300 is maximum deceleration. So let's aassume to decelerate 1/4 of this value)
+        self.CROSSING_WIDTH = 30.0  #Distance from 
 
         self.loop()
         
@@ -86,6 +93,8 @@ class WaypointUpdater(object):
 
         return -1
 
+    def twist_cb( self, msg ):
+        self.twist = msg
 
     def pose_cb(self, msg):
         self.carpose = [msg.pose.position.x, msg.pose.position.y]
@@ -110,18 +119,44 @@ class WaypointUpdater(object):
 
         redlight_idx = self.next_red_light_idx - nearest_idx 
     
+        
+
         if( self.next_red_light_idx != -1 and redlight_idx < 200 ):
+
+            nominal_speed = lane.waypoints[0].twist.twist.linear.x
+
+            #Distance needed for stop the car, given the current speed and an desired deceleration
+            dist_for_stopping = self.distance_for_stop( nominal_speed, self.REFERENCE_ACCEL )
+
+            if( self.twist is not None and self.twist.twist.linear.x > nominal_speed ):
+                dist_for_stopping = self.distance_for_stop( self.twist.twist.linear.x, self.REFERENCE_ACCEL )            
+
+            #Distancce in wich we need to have sttoped for the the next traffic light,
+            dist_for_next_traffic_light = self.distance( lane.waypoints, 0, redlight_idx  ) + self.CROSSING_WIDTH
+
+            accel = self.REFERENCE_ACCEL
+
+            if( dist_for_next_traffic_light > 0 and  dist_for_next_traffic_light > dist_for_stopping ):
+                #We do not have enought distance for stop at the desired reference accel, let's see
+                #which accel we do need and use it for deceleration
+                accel = self.get_accel( self.twist.twist.linear.x, dist_for_next_traffic_light )
+                if( accel < self.REFERENCE_ACCEL ):
+                    accel = self.REFERENCE_ACCEL
+
+
 
             for i in range( len( lane.waypoints ) ):
 
                 new_speed = lane.waypoints[i].twist.twist.linear.x
 
                 if( i < redlight_idx ):
-                    dist = self.distance( lane.waypoints, i, redlight_idx  )
+                    #Distance between an waypoint and the point where we need to have stopped
+                    dist = self.distance( lane.waypoints, i, redlight_idx  ) - self.CROSSING_WIDTH
 
-                    if( dist < 60.0 ):
+                    if( dist < ( dist_for_stopping + self.CROSSING_WIDTH ) ):
 
-                        new_speed = 11.1 - (60 -  dist)/((60-30.0)/11.1)
+                        new_speed = self.get_ref_speed( dist , accel )
+
                         if( new_speed < 0.0 ):
                             new_speed = 0.0
                         
@@ -153,6 +188,25 @@ class WaypointUpdater(object):
             dist += dl(waypoints[wp1].pose.pose.position, waypoints[i].pose.pose.position)
             wp1 = i
         return dist
+
+
+    ## Torricelli Formulas. It will calculate how many meters before a full stop
+    # we need to start to decelerate given an constant accel,ref_accel
+    def distance_for_stop( self, start_speed, ref_accel ):
+        return  ( start_speed**2.0 )/( 2.0 * ref_accel )
+
+    ## Inverse of the Torricelli Formula
+    # IT will let us plan wich speed to achieve given a distance, assuming that 
+    # after the car has travelled the giben distance with the constant accel, it will
+    # be stopped
+    def get_ref_speed( self, distance, ref_accel ):
+        a = distance * 2.0 * ref_accel
+        if a >= 0 :
+            return math.sqrt( a )
+        return 0.0
+
+    def get_accel( self, start_speed, distance ):
+        return ( start_speed ** 2.0) / ( 2* distance )
 
 
 if __name__ == '__main__':

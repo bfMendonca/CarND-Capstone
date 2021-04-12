@@ -50,7 +50,7 @@ class DBWNode(object):
         self.throttle_pub = rospy.Publisher('/vehicle/throttle_cmd', ThrottleCmd, queue_size=1)
         self.brake_pub = rospy.Publisher('/vehicle/brake_cmd', BrakeCmd, queue_size=1)
 
-        # TODO: Create `Controller` object
+        
         self.controller = Controller( wheel_base, steer_ratio, 0.2, max_lat_accel, max_steer_angle )
 
         # TODO: Subscribe to all the topics you need to

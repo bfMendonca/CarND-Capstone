@@ -4,3 +4,11 @@ build
 devel
 
 profile.tmp
+
+bags/
+
+*.sublime-project
+
+*.sublime-workspace
+
+*.bag

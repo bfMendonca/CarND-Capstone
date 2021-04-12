@@ -60,6 +60,9 @@ class TLDetector(object):
         self.last_wp = -1
         self.state_count = 0
 
+        self.REFERENCE_ACCEL = 10/4.0 #(1300 is maximum deceleration. So let's aassume to decelerate 1/4 of this value)
+        self.CROSSING_WIDTH = 32.0  #Distance from 
+
         rospy.spin()
 
     def pose_cb(self, msg):
@@ -103,7 +106,7 @@ class TLDetector(object):
         if( self.next_traffic_light_state == TrafficLight.UNKNOWN ):
             #Unknown, we should stop for caution
             self.upcoming_red_light_pub.publish( Int32( light_index ) )
-        elif( distance > 20 and self.next_traffic_light_state == TrafficLight.RED ):
+        elif( distance > self.CROSSING_WIDTH*0.7 and self.next_traffic_light_state == TrafficLight.RED ):
             #Red, we shoud stop. If distance < 10, probably, we started to cross on yellow and it turned, keep going
             self.upcoming_red_light_pub.publish( Int32( light_index ) )
         elif(  distance > 50.0 and self.next_traffic_light_state == TrafficLight.YELLOW):
@@ -112,6 +115,11 @@ class TLDetector(object):
         else:
             self.upcoming_red_light_pub.publish( Int32( -1 ) )
 
+
+    ## Torricelli Formulas. It will calculate how many meters before a full stop
+    # we need to start to decelerate given an constant accel,ref_accel
+    def distance_for_stop( self, start_speed, ref_accel ):
+        return  ( start_speed**2.0 )/( 2.0 * ref_accel )
 
     def image_cb(self, msg):
         #rospy.logwarn('hello')
@@ -204,9 +212,6 @@ class TLDetector(object):
         if(self.pose):
             car_position = self.get_closest_waypoint(self.pose.pose)
 
-            rospy.logwarn( 'hello' )
-
-        #TODO find the closest visible traffic light (if one exists)
 
         if light:
             state = self.get_light_state(light)
